@@ -13,17 +13,20 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityResurrectEvent;
-import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemConsumeEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 
 public final class CustomCooldowns extends JavaPlugin implements Listener, CommandExecutor {
 
-    private final Map<Material, Integer> itemCooldowns = new HashMap<>();
+    private final Map<Material, Integer> configCooldowns = new HashMap<>();
+    // Mapa: UUID gracza -> (Material -> Czas w ms, kiedy cooldown wygaśnie)
+    private final Map<UUID, Map<Material, Long>> activeCooldowns = new HashMap<>();
 
     @Override
     public void onEnable() {
@@ -34,15 +37,13 @@ public final class CustomCooldowns extends JavaPlugin implements Listener, Comma
     }
 
     public void loadCooldownsFromConfig() {
-        itemCooldowns.clear();
+        configCooldowns.clear();
         ConfigurationSection section = getConfig().getConfigurationSection("cooldowns");
         if (section != null) {
             for (String key : section.getKeys(false)) {
                 Material mat = Material.matchMaterial(key);
                 if (mat != null) {
-                    itemCooldowns.put(mat, section.getInt(key));
-                } else {
-                    getLogger().warning("Nie znaleziono przedmiotu o nazwie: " + key);
+                    configCooldowns.put(mat, section.getInt(key));
                 }
             }
         }
@@ -52,17 +53,35 @@ public final class CustomCooldowns extends JavaPlugin implements Listener, Comma
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (command.getName().equalsIgnoreCase("cooldownreload")) {
             if (!sender.hasPermission("customcooldowns.admin")) {
-                sender.sendMessage(getMessage("messages.no-permission"));
+                sender.sendMessage(parseColor(getConfig().getString("messages.no-permission", "&cBrak uprawnień!")));
                 return true;
             }
             reloadConfig();
             loadCooldownsFromConfig();
-            sender.sendMessage(getMessage("messages.config-reloaded"));
+            sender.sendMessage(parseColor(getConfig().getString("messages.config-reloaded", "&aPrzeładowano!")));
             return true;
         }
         return false;
     }
 
+    // 1. BLOKADA I REJESTRACJA DLA JEDZENIA (Złote jabłka, koksy, chorusy)
+    // Wywołuje się DOPIERO GDY GRACZ SKOŃCZY EATOWANIE
+    @EventHandler(priority = EventPriority.HIGH)
+    public void onPlayerConsume(PlayerItemConsumeEvent event) {
+        Player player = event.getPlayer();
+        Material mat = event.getItem().getType();
+
+        if (isCooldownActive(player, mat)) {
+            event.setCancelled(true);
+            sendCooldownMessage(player, mat);
+            return;
+        }
+
+        // Zjedzenie zakończone -> startujemy odliczanie od TERAZ
+        startCooldown(player, mat);
+    }
+
+    // 2. BLOKADA PRZED ROZPOCZĘCIEM JEDZENIA / RZUCANIA PERŁY
     @EventHandler(priority = EventPriority.HIGH)
     public void onPlayerInteract(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_AIR && event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
@@ -73,59 +92,64 @@ public final class CustomCooldowns extends JavaPlugin implements Listener, Comma
         Player player = event.getPlayer();
         Material mat = item.getType();
 
-        if (checkAndApplyCooldown(player, mat)) {
+        if (isCooldownActive(player, mat)) {
             event.setCancelled(true);
+            sendCooldownMessage(player, mat);
+            return;
+        }
+
+        // Przedmioty natychmiastowe (nie jedzenie), np. Ender Pearl
+        if (mat == Material.ENDER_PEARL) {
+            startCooldown(player, mat);
         }
     }
 
-    @EventHandler(priority = EventPriority.HIGH)
-    public void onPlayerConsume(PlayerItemConsumeEvent event) {
-        Player player = event.getPlayer();
-        Material mat = event.getItem().getType();
-
-        if (checkAndApplyCooldown(player, mat)) {
-            event.setCancelled(true);
-        }
-    }
-
+    // 3. OBSŁUGA TOTEMU
     @EventHandler(priority = EventPriority.HIGH)
     public void onTotemUse(EntityResurrectEvent event) {
         if (!(event.getEntity() instanceof Player player)) return;
 
-        ItemStack mainHand = player.getInventory().getItemInMainHand();
-        ItemStack offHand = player.getInventory().getItemInOffHand();
+        Material mat = Material.TOTEM_OF_UNDYING;
 
-        Material totemMat = Material.TOTEM_OF_UNDYING;
-        if (mainHand.getType() == totemMat || offHand.getType() == totemMat) {
-            if (player.hasCooldown(totemMat)) {
-                event.setCancelled(true);
-            } else if (itemCooldowns.containsKey(totemMat)) {
-                int seconds = itemCooldowns.get(totemMat);
-                player.setCooldown(totemMat, seconds * 20);
-            }
+        if (isCooldownActive(player, mat)) {
+            event.setCancelled(true);
+            sendCooldownMessage(player, mat);
+            return;
         }
+
+        startCooldown(player, mat);
     }
 
-    private boolean checkAndApplyCooldown(Player player, Material mat) {
-        if (!itemCooldowns.containsKey(mat)) return false;
+    private boolean isCooldownActive(Player player, Material mat) {
+        if (!configCooldowns.containsKey(mat)) return false;
 
-        if (player.hasCooldown(mat)) {
-            int ticksLeft = player.getCooldown(mat);
-            int secondsLeft = (ticksLeft / 20) + 1;
+        Map<Material, Long> playerMap = activeCooldowns.get(player.getUniqueId());
+        if (playerMap == null || !playerMap.containsKey(mat)) return false;
 
-            String actionbarMsg = getConfig().getString("messages.cooldown-actionbar", "&cOdczekaj {time}s!")
-                    .replace("{time}", String.valueOf(secondsLeft));
-            player.sendActionBar(parseColor(actionbarMsg));
-            return true;
-        } else {
-            int seconds = itemCooldowns.get(mat);
-            player.setCooldown(mat, seconds * 20);
-            return false;
-        }
+        long expireTime = playerMap.get(mat);
+        return System.currentTimeMillis() < expireTime;
     }
 
-    private Component getMessage(String path) {
-        return parseColor(getConfig().getString(path, ""));
+    private void startCooldown(Player player, Material mat) {
+        if (!configCooldowns.containsKey(mat)) return;
+
+        int seconds = configCooldowns.get(mat);
+        long expireTime = System.currentTimeMillis() + (seconds * 1000L);
+
+        activeCooldowns.computeIfAbsent(player.getUniqueId(), k -> new HashMap<>()).put(mat, expireTime);
+    }
+
+    private void sendCooldownMessage(Player player, Material mat) {
+        Map<Material, Long> playerMap = activeCooldowns.get(player.getUniqueId());
+        if (playerMap == null || !playerMap.containsKey(mat)) return;
+
+        long expireTime = playerMap.get(mat);
+        long millisLeft = expireTime - System.currentTimeMillis();
+        long secondsLeft = (millisLeft / 1000) + 1;
+
+        String msg = getConfig().getString("messages.cooldown-actionbar", "&cOdczekaj {time}s!")
+                .replace("{time}", String.valueOf(secondsLeft));
+        player.sendActionBar(parseColor(msg));
     }
 
     private Component parseColor(String text) {
