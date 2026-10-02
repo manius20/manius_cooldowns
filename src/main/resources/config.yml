@@ -1,0 +1,15 @@
+# Wiadomości
+messages:
+  no-permission: "&cBrak uprawnień!"
+  config-reloaded: "&aKonfiguracja CustomCooldowns została pomyślnie przeładowana!"
+  cooldown-actionbar: "&cMusisz odczekać jeszcze &e{time}s &cprzed ponownym użyciem tego przedmiotu!"
+
+# Lista przedmiotów i ich cooldowny (w sekundach)
+# Używaj oficjalnych nazw przedmiotów z Minecrafta (w wielkich literach)
+cooldowns:
+  ENDER_PEARL: 15
+  GOLDEN_APPLE: 10
+  ENCHANTED_GOLDEN_APPLE: 30
+  TOTEM_OF_UNDYING: 45
+  TRIDENT: 5
+  CHORUS_FRUIT: 12
