@@ -1,0 +1,8 @@
+name: manius_Cooldowns
+version: 1.0
+main: com.example.customcooldowns.CustomCooldowns
+api-version: '1.21'
+commands:
+  cooldownreload:
+    description: Przeładowuje plik konfiguracji config.yml
+    permission: customcooldowns.admin
